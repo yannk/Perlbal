@@ -53,8 +53,6 @@ use fields (
             'trusted_upstream_proxies', # Net::Netmask object containing netmasks for trusted upstreams
             'always_trusted', # bool; if true, always trust upstreams
             'blind_proxy', # bool: if true, do not modify X-Forwarded-For, X-Host, or X-Forwarded-Host headers
-            'enable_reproxy', # bool; if true, advertise that server will reproxy files and/or URLs
-            'reproxy_cache_maxsize', # int; maximum number of reproxy results to be cached. (0 is disabled and default)
             'client_sndbuf_size',    # int: bytes for SO_SNDBUF
             'server_process' ,       # scalar: path to server process (executable)
             'persist_client_idle_timeout',  # int: keep-alive timeout in seconds for clients (default is 30)
@@ -272,30 +270,6 @@ our $tunables = {
         default => 0,
         check_role => "web_server",
         check_type => "bool",
-    },
-
-    'enable_reproxy' => {
-        des => "Enable 'reproxying' (end-user-transparent internal redirects) to either local files or other URLs.  When enabled, the backend servers in the pool that this service is configured for will have access to tell this Perlbal instance to serve any local readable file, or connect to any other URL that this Perlbal can connect to.  Only enable this if you trust the backend web nodes.",
-        default => 0,
-        check_role => "reverse_proxy",
-        check_type => "bool",
-    },
-
-    'reproxy_cache_maxsize' => {
-        des => "Set the maximum number of cached reproxy results (X-REPROXY-CACHE-FOR) that may be kept in the service cache. These cached requests take up about 1.25KB of ram each (on Linux x86), but will vary with usage. Perlbal still starts with 0 in the cache and will grow over time. Be careful when adjusting this and watch your ram usage like a hawk.",
-        default => 0,
-        check_role => "reverse_proxy",
-        check_type => "int",
-        setter => sub {
-            my ($self, $val, $set, $mc) = @_;
-            if ($val) {
-                $self->{reproxy_cache} ||= Perlbal::Cache->new(maxsize => 1);
-                $self->{reproxy_cache}->set_maxsize($val);
-            } else {
-                $self->{reproxy_cache} = undef;
-            }
-            return $mc->ok;
-        },
     },
 
     'upload_status_listeners' => {

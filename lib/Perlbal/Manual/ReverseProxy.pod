@@ -131,15 +131,6 @@ Whether Perlbal should transparently retry requests to backends if a backend ret
 Default is false.
 
 
-=item B<enable_reproxy> = bool
-
-Enable 'reproxying' (end-user-transparent internal redirects) to either local files or other URLs. When enabled, the backend servers in the pool that this service is configured for will have access to tell this Perlbal instance to serve any local readable file, or connect to any other URL that this Perlbal can connect to. Only enable this if you trust the backend web nodes.
-
-Default is false.
-
-See the section C<Reproxying> in this document for more information.
-
-
 =item B<error_retry_schedule> = string of comma-separated seconds (full or partial)
 
 String of comma-separated seconds (full or partial) to delay between retries. For example "0,2" would mean do at most two retries, the first zero seconds after the first failure, and the second 2 seconds after the second failure. You probably don't need to modify the default value.

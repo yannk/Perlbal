@@ -343,16 +343,6 @@ URI to send instead of the one requested; this is used to instruct C<_serve_requ
 Extra storage; plugins can use it if they want.
 
 
-=item reproxy_file
-
-Filename the backend told us to start opening.
-
-
-=item reproxy_file_size
-
-Size of file, once we C<stat()> it.
-
-
 =item reproxy_fh
 
 If needed, L<IO::Handle> of fd.
@@ -469,21 +459,6 @@ Boolean; 1 if we are or were in the high priority queue.
 Boolean; 1 if we are or were in the low priority queue.
 
 
-=item reproxy_uris
-
-Arrayref; URIs to reproxy to, in order.
-
-
-=item reproxy_expected_size
-
-Int: size of response we expect to get back for reproxy.
-
-
-=item currently_reproxying
-
-Arrayref; the host info and URI we're reproxying right now.
-
-
 =item content_length_remain
 
 Int: amount of data we're still waiting for.
@@ -497,11 +472,6 @@ Bool: whether we've already sent a response to the user or not.
 =item last_request_time
 
 Int: time that we last received a request.
-
-
-=item primary_res_hdrs
-
-If defined, we are doing a transparent reproxy-URI and the headers we get back aren't necessarily the ones we want. Instead, get most headers from the provided C<res> headers object here.
 
 
 =item is_buffering
@@ -644,11 +614,6 @@ L<Perlbal::Pool> that we're using to allocate nodes if we're in proxy mode.
 L<Perlbal::TCPListener> object, when enabled.
 
 
-=item reproxy_cache
-
-L<Perlbal::Cache> object, when enabled.
-
-
 =back
 
 
@@ -758,11 +723,6 @@ Number of spare backends to connect to in advance all the time.
 How much data a L<Perlbal::ClientProxy> object should buffer from a backend.
 
 
-=item buffer_size_reproxy_url
-
-Same as above but for backends that are reproxying for us.
-
-
 =item queue_relief_size
 
 Number of outstanding standard priority connections to activate pressure relief at.
@@ -786,16 +746,6 @@ Boolean; if true, always trust upstreams.
 =item blind_proxy
 
 Boolean; if true, do not modify C<X-Forwarded-For>, C<X-Host>, or C<X-Forwarded-Host> headers.
-
-
-=item enable_reproxy
-
-Boolean; if true, advertise that server will reproxy files and/or URLs.
-
-
-=item reproxy_cache_maxsize
-
-Maximum number of reproxy results to be cached. (0 is disabled and default).
 
 
 =item client_sndbuf_size
@@ -1017,11 +967,6 @@ Boolean; whether to provide a "Server" header.
 =item _stat_requests
 
 Total requests to this service.
-
-
-=item _stat_cache_hits
-
-Total requests to this service that were served via the reproxy-url cache.
 
 
 =back

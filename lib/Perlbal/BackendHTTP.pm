@@ -262,10 +262,6 @@ sub assign_client {
 
     $hds->header("Connection", $persist ? "keep-alive" : "close");
 
-    if ($svc->{enable_reproxy}) {
-        $hds->header("X-Proxy-Capabilities", "reproxy-file");
-    }
-
     # decide whether we trust the upstream or not, to give us useful
     # forwarding info headers
     if ($svc->trusted_ip($client_ip)) {
@@ -469,26 +465,7 @@ sub handle_response { # : void
     }
     $self->{content_length_remain} = $self->{content_length} || 0;
 
-    my $reproxy_cache_for = $hd->header('X-REPROXY-CACHE-FOR') || 0;
-
-    # special cases:  reproxying and retrying after server errors:
-    if ((my $rep = $hd->header('X-REPROXY-FILE')) && $self->may_reproxy) {
-        # make the client begin the async IO while we move on
-        $self->next_request;
-        $client->start_reproxy_file($rep, $hd);
-        return;
-    } elsif ((my $urls = $hd->header('X-REPROXY-URL')) && $self->may_reproxy) {
-        $self->next_request;
-        $self->{service}->add_to_reproxy_url_cache($rqhd, $hd)
-            if $reproxy_cache_for;
-        $client->start_reproxy_uri($hd, $urls);
-        return;
-    } elsif ((my $svcname = $hd->header('X-REPROXY-SERVICE')) && $self->may_reproxy) {
-        $self->next_request;
-        $self->{client} = undef;
-        $client->start_reproxy_service($hd, $svcname);
-        return;
-    } elsif ($res_code == 500 &&
+    if ($res_code == 500 &&
              $rqhd->request_method =~ /^GET|HEAD$/ &&
              $client->should_retry_after_500($self)) {
         # eh, 500 errors are rare.  just close and don't spend effort reading
@@ -501,28 +478,8 @@ sub handle_response { # : void
     }
 
     # regular path:
-    my $res_source = $client->{primary_res_hdrs} || $hd;
+    my $res_source = $hd;
     my $thd = $client->{res_headers} = $res_source->clone;
-
-    # if we had an alternate primary response header, make sure
-    # we send the real content-length (from the reproxied URL)
-    # and not the one the first server gave us
-    if ($client->{primary_res_hdrs}) {
-        $thd->header('Content-Length', $hd->header('Content-Length'));
-        $thd->header('X-REPROXY-FILE', undef);
-        $thd->header('X-REPROXY-URL', undef);
-        $thd->header('X-REPROXY-EXPECTED-SIZE', undef);
-        $thd->header('X-REPROXY-CACHE-FOR', undef);
-
-        # also update the response code, in case of 206 partial content
-        my $rescode = $hd->response_code;
-        if ($rescode == 206 || $rescode == 416) {
-            $thd->code($rescode);
-            $thd->header('Accept-Ranges', $hd->header('Accept-Ranges')) if $hd->header('Accept-Ranges');
-            $thd->header('Content-Range', $hd->header('Content-Range')) if $hd->header('Content-Range');
-        }
-        $thd->code(200) if $thd->response_code == 204;  # upgrade HTTP No Content (204) to 200 OK.
-    }
 
     # setup_keepalive will set Connection: and Keep-Alive: headers for us
     # as well as setup our HTTP version appropriately
@@ -544,13 +501,6 @@ sub handle_response { # : void
             $client->backend_finished;
         });
     }
-}
-
-sub may_reproxy {
-    my Perlbal::BackendHTTP $self = shift;
-    my Perlbal::Service $svc = $self->{service};
-    return 0 unless $svc;
-    return $svc->{enable_reproxy};
 }
 
 # Backend

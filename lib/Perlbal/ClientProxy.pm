@@ -19,16 +19,9 @@ use fields (
             'reconnect_count',     # number of times we've tried to reconnect to backend
             'high_priority',       # boolean; 1 if we are or were in the high priority queue
             'low_priority',        # boolean; 1 if we are or were in the low priority queue
-            'reproxy_uris',        # arrayref; URIs to reproxy to, in order
-            'reproxy_expected_size', # int: size of response we expect to get back for reproxy
-            'currently_reproxying',  # arrayref; the host info and URI we're reproxying right now
             'content_length_remain', # int: amount of data we're still waiting for
             'responded',           # bool: whether we've already sent a response to the user or not
             'last_request_time',   # int: time that we last received a request
-            'primary_res_hdrs',  # if defined, we are doing a transparent reproxy-URI
-                                 # and the headers we get back aren't necessarily
-                                 # the ones we want.  instead, get most headers
-                                 # from the provided res headers object here.
             'is_buffering',        # bool; if we're buffering some/all of a request to memory/disk
             'is_writing',          # bool; if on, we currently have an aio_write out
             'start_time',          # hi-res time when we started getting data to upload
@@ -106,294 +99,16 @@ sub init {
     $self->{chunked_upload_state} = undef;
     $self->{request_body_length} = undef;
 
-    $self->{reproxy_uris} = undef;
-    $self->{reproxy_expected_size} = undef;
-    $self->{currently_reproxying} = undef;
-
     $self->{retry_count} = 0;
-}
-
-# given a service name, re-request (GET/HEAD only) to that service, even though
-# you've already done a request to your original service
-sub start_reproxy_service {
-    my Perlbal::ClientProxy $self = $_[0];
-    my Perlbal::HTTPHeaders $primary_res_hdrs = $_[1];
-    my $svc_name = $_[2];
-
-    my $svc = $svc_name ? Perlbal->service($svc_name) : undef;
-    unless ($svc) {
-        $self->_simple_response(404, "Vhost twiddling not configured for requested pair.");
-        return 1;
-    }
-
-    $self->{backend_requested} = 0;
-    $self->{backend} = undef;
-    $self->{res_headers} = $primary_res_hdrs;
-
-    $svc->adopt_base_client($self);
-}
-
-# call this with a string of space separated URIs to start a process
-# that will fetch the item at the first and return it to the user,
-# on failure it will try the second, then third, etc
-sub start_reproxy_uri {
-    my Perlbal::ClientProxy $self = $_[0];
-    my Perlbal::HTTPHeaders $primary_res_hdrs = $_[1];
-    my $urls = $_[2];
-
-    # at this point we need to disconnect from our backend
-    $self->{backend} = undef;
-
-    # failure if we have no primary response headers
-    return unless $self->{primary_res_hdrs} ||= $primary_res_hdrs;
-
-    # construct reproxy_uri list
-    if (defined $urls) {
-        my @uris = split /\s+/, $urls;
-        $self->{currently_reproxying} = undef;
-        $self->{reproxy_uris} = [];
-        foreach my $uri (@uris) {
-            next unless $uri =~ m!^http://(.+?)(?::(\d+))?(/.*)?$!;
-            push @{$self->{reproxy_uris}}, [ $1, $2 || 80, $3 || '/' ];
-        }
-    }
-
-    # if we get in here and we have currently_reproxying defined, then something
-    # happened and we want to retry that one
-    if ($self->{currently_reproxying}) {
-        unshift @{$self->{reproxy_uris}}, $self->{currently_reproxying};
-        $self->{currently_reproxying} = undef;
-    }
-
-    # if we have no uris in our list now, tell the user 404
-    return $self->_simple_response(503)
-        unless @{$self->{reproxy_uris} || []};
-
-    # set the expected size if we got a content length in our headers
-    if ($primary_res_hdrs && (my $expected_size = $primary_res_hdrs->header('X-REPROXY-EXPECTED-SIZE'))) {
-        $self->{reproxy_expected_size} = $expected_size;
-    }
-
-    # pass ourselves off to the reproxy manager
-    $self->state('wait_backend');
-    Perlbal::ReproxyManager::do_reproxy($self);
-}
-
-# called by the reproxy manager when we can't get to our requested backend
-sub try_next_uri {
-    my Perlbal::ClientProxy $self = $_[0];
-
-    if ($self->{currently_reproxying}) {
-        # If we're currently reproxying to a backend, that means we want to try the next uri which is
-        # ->{reproxy_uris}->[0].
-    } else {
-        # Since we're not currently reproxying, that means we never got a backend in the first place,
-        # so we want to move on to the next uri which is ->{reproxy_uris}->[1] (shift one off)
-        shift @{$self->{reproxy_uris}};
-    }
-
-    $self->{currently_reproxying} = undef;
-
-    $self->start_reproxy_uri();
 }
 
 # returns true if this ClientProxy is too many bytes behind the backend
 sub too_far_behind_backend {
     my Perlbal::ClientProxy $self    = $_[0];
     my Perlbal::BackendHTTP $backend = $self->{backend}   or return 0;
-
-    # if a backend doesn't have a service, it's a
-    # ReproxyManager-created backend, and thus it should use the
-    # 'buffer_size_reproxy_url' parameter for acceptable buffer
-    # widths, and not the regular 'buffer_size'.  this lets people
-    # tune buffers depending on the types of webservers.  (assumption
-    # being that reproxied-to webservers are event-based and it's okay
-    # to tie the up longer in favor of using less buffer memory in
-    # perlbal)
-    my $max_buffer = defined $backend->{service} ?
-        $self->{service}->{buffer_size} :
-        $self->{service}->{buffer_size_reproxy_url};
+    my $max_buffer = $self->{service}->{buffer_size};
 
     return $self->{write_buf_size} > $max_buffer;
-}
-
-# this is a callback for when a backend has been created and is
-# ready for us to do something with it
-sub use_reproxy_backend {
-    my Perlbal::ClientProxy $self = $_[0];
-    my Perlbal::BackendHTTP $be = $_[1];
-
-    # get a URI
-    my $datref = $self->{currently_reproxying} = shift @{$self->{reproxy_uris}};
-    unless (defined $datref) {
-        # return error and close the backend
-        $be->close('invalid_uris');
-        return $self->_simple_response(503);
-    }
-
-    # now send request
-    $self->{backend} = $be;
-    $be->{client} = $self;
-
-    my $extra_hdr = "";
-    if (my $range = $self->{req_headers}->header("Range")) {
-        $extra_hdr .= "Range: $range\r\n";
-    }
-    if (my $host = $self->{req_headers}->header("Host")) {
-        $extra_hdr .= "Host: $host\r\n";
-    }
-
-    my $req_method = $self->{req_headers}->request_method eq 'HEAD' ? 'HEAD' : 'GET';
-    my $headers = "$req_method $datref->[2] HTTP/1.0\r\nConnection: keep-alive\r\n${extra_hdr}\r\n";
-
-    $be->{req_headers} = Perlbal::HTTPHeaders->new(\$headers);
-    $be->state('sending_req');
-    $self->state('backend_req_sent');
-    $be->write($be->{req_headers}->to_string_ref);
-    $be->watch_read(1);
-    $be->watch_write(1);
-}
-
-# this is called when a transient backend getting a reproxied URI has received
-# a response from the server and is ready for us to deal with it
-sub backend_response_received {
-    my Perlbal::ClientProxy $self = $_[0];
-    my Perlbal::BackendHTTP $be = $_[1];
-
-    # we fail if we got something that's NOT a 2xx code, OR, if we expected
-    # a certain size and got back something different
-    my $code = $be->{res_headers}->response_code + 0;
-
-    my $bad_code = sub {
-        return 0 if $code >= 200 && $code <= 299;
-        return 0 if $code == 416;
-        return 1;
-    };
-
-    my $bad_size = sub {
-        return 0 unless defined $self->{reproxy_expected_size};
-        return $self->{reproxy_expected_size} != $be->{res_headers}->header('Content-length');
-    };
-
-    if ($bad_code->() || $bad_size->()) {
-        # fall back to an alternate URL
-        $be->{client} = undef;
-        $be->close('non_200_reproxy');
-        $self->try_next_uri;
-        return 1;
-    }
-
-    # a response means that we are no longer currently waiting on a reproxy, and
-    # don't want to retry this URI
-    $self->{currently_reproxying} = undef;
-
-    return 0;
-}
-
-sub start_reproxy_file {
-    my Perlbal::ClientProxy $self = shift;
-    my $file = shift;                      # filename to reproxy
-    my Perlbal::HTTPHeaders $hd = shift;   # headers from backend, in need of cleanup
-
-    # at this point we need to disconnect from our backend
-    $self->{backend} = undef;
-
-    # call hook for pre-reproxy
-    return if $self->{service}->run_hook("start_file_reproxy", $self, \$file);
-
-    # set our expected size
-    if (my $expected_size = $hd->header('X-REPROXY-EXPECTED-SIZE')) {
-        $self->{reproxy_expected_size} = $expected_size;
-    }
-
-    # start an async stat on the file
-    $self->state('wait_stat');
-    Perlbal::AIO::aio_stat($file, sub {
-
-        # if the client's since disconnected by the time we get the stat,
-        # just bail.
-        return if $self->{closed};
-
-        my $size = -s _;
-
-        unless ($size) {
-            # FIXME: POLICY: 404 or retry request to backend w/o reproxy-file capability?
-            return $self->_simple_response(404);
-        }
-        if (defined $self->{reproxy_expected_size} && $self->{reproxy_expected_size} != $size) {
-            # 404; the file size doesn't match what we expected
-            return $self->_simple_response(404);
-        }
-
-        # if the thing we're reproxying is indeed a file, advertise that
-        # we support byte ranges on it
-        if (-f _) {
-            $hd->header("Accept-Ranges", "bytes");
-        }
-
-        my ($status, $range_start, $range_end) = $self->{req_headers}->range($size);
-        my $not_satisfiable = 0;
-
-        if ($status == 416) {
-            $hd = Perlbal::HTTPHeaders->new_response(416);
-            $hd->header("Content-Range", $size ? "bytes */$size" : "*");
-            $not_satisfiable = 1;
-        }
-
-        # change the status code to 200 if the backend gave us 204 No Content
-        $hd->code(200) if $hd->response_code == 204;
-
-        # fixup the Content-Length header with the correct size (application
-        # doesn't need to provide a correct value if it doesn't want to stat())
-        if ($status == 200) {
-            $hd->header("Content-Length", $size);
-        } elsif ($status == 206) {
-            $hd->header("Content-Range", "bytes $range_start-$range_end/$size");
-            $hd->header("Content-Length", $range_end - $range_start + 1);
-            $hd->code(206);
-        }
-
-        # don't send this internal header to the client:
-        $hd->header('X-REPROXY-FILE', undef);
-
-        # rewrite some other parts of the header
-        $self->setup_keepalive($hd);
-
-        # just send the header, now that we cleaned it.
-        $self->{res_headers} = $hd;
-        $self->write($hd->to_string_ref);
-
-        if ($self->{req_headers}->request_method eq 'HEAD' || $not_satisfiable) {
-            $self->write(sub { $self->http_response_sent; });
-            return;
-        }
-
-        $self->state('wait_open');
-        Perlbal::AIO::aio_open($file, 0, 0 , sub {
-            my $fh = shift;
-
-            # if client's gone, just close filehandle and abort
-            if ($self->{closed}) {
-                CORE::close($fh) if $fh;
-                return;
-            }
-
-            # handle errors
-            if (! $fh) {
-                # FIXME: do 500 vs. 404 vs whatever based on $! ?
-                return $self->_simple_response(500);
-            }
-
-            # seek if partial content
-            if ($status == 206) {
-                sysseek($fh, $range_start, &POSIX::SEEK_SET);
-                $size = $range_end - $range_start + 1;
-            }
-
-            $self->reproxy_fh($fh, $size);
-            $self->watch_write(1);
-        });
-    });
 }
 
 # Client
@@ -477,11 +192,7 @@ sub http_response_sent {
     # if we get here we're being persistent, reset our state
     $self->{backend_requested} = 0;
     $self->{high_priority} = 0;
-    $self->{reproxy_uris} = undef;
-    $self->{reproxy_expected_size} = undef;
-    $self->{currently_reproxying} = undef;
     $self->{content_length_remain} = undef;
-    $self->{primary_res_hdrs} = undef;
     $self->{responded} = 0;
     $self->{is_buffering} = 0;
     $self->{is_writing} = 0;
@@ -806,9 +517,6 @@ sub handle_request {
         # get the backend request process moving, since we aren't buffering
         $self->{is_buffering} = 0;
 
-        # if reproxy-caching is enabled, we can often bypass needing to allocate a BackendHTTP connection:
-        return if $svc->{reproxy_cache} && $self->satisfy_request_from_cache;
-
         $self->request_backend;
     }
 }
@@ -855,58 +563,6 @@ sub handle_chunked_upload {
     };
 
     $self->{chunked_upload_state} = Perlbal::ChunkedUploadState->new(%$args);
-    return 1;
-}
-
-sub satisfy_request_from_cache {
-    my Perlbal::ClientProxy $self = shift;
-
-    my $req_hd = $self->{req_headers};
-    my $svc    = $self->{service};
-    my $cache  = $svc->{reproxy_cache};
-    $svc->{_stat_requests}++;
-
-    my $requri   = $req_hd->request_uri    || '';
-    my $hostname = $req_hd->header("Host") || '';
-
-    my $key      = "$hostname|$requri";
-
-    my $reproxy  = $cache->get($key) or
-        return 0;
-
-    my ($timeout, $headers, $urls) = @$reproxy;
-    return 0 if time() > $timeout;
-
-    $svc->{_stat_cache_hits}++;
-    my %headers = map { ref $_ eq 'SCALAR' ? $$_ : $_ } @{$headers || []};
-
-    if (my $ims = $req_hd->header("If-Modified-Since")) {
-        my ($lm_key) = grep { uc($_) eq "LAST-MODIFIED" } keys %headers;
-        my $lm = $headers{$lm_key} || "";
-
-        # remove the IE length suffix
-        $ims =~ s/; length=(\d+)//;
-
-        # If 'Last-Modified' is same as 'If-Modified-Since', send a 304
-        if ($ims eq $lm) {
-            my $res_hd = $self->{res_headers} = Perlbal::HTTPHeaders->new_response(304);
-            $res_hd->header("Content-Length", "0");
-            $self->setup_keepalive($res_hd);
-            $self->tcp_cork(1);
-            $self->state('xfer_resp');
-            $self->write($res_hd->to_string_ref);
-            $self->write(sub { $self->http_response_sent; });
-            return 1;
-        }
-    }
-
-    my $res_hd = Perlbal::HTTPHeaders->new_response(200);
-    $res_hd->header("Date", HTTP::Date::time2str(time()));
-    while (my ($key, $value) = each %headers) {
-        $res_hd->header($key, $value);
-    }
-
-    $self->start_reproxy_uri($res_hd, $urls);
     return 1;
 }
 
@@ -1264,7 +920,6 @@ sub as_string {
     $ret .= "; responded" if $self->{responded};
     $ret .= "; waiting_for=" . $self->{content_length_remain}
         if defined $self->{content_length_remain};
-    $ret .= "; reproxying" if $self->{currently_reproxying};
 
     return $ret;
 }

@@ -88,7 +88,6 @@ use Perlbal::ClientHTTPBase;
 use Perlbal::ClientProxy;
 use Perlbal::ClientHTTP;
 use Perlbal::BackendHTTP;
-use Perlbal::ReproxyManager;
 use Perlbal::Pool;
 use Perlbal::ManageCommand;
 use Perlbal::CommandContext;
@@ -908,17 +907,6 @@ sub MANAGE_server {
     my $mc = shift->parse(qr/^server (\S+) ?= ?(.+)$/);
     my ($key, $val) = ($mc->arg(1), $mc->arg(2));
 
-    if ($key =~ /^max_reproxy_connections(?:\((.+)\))?/) {
-        return $mc->err("Expected numeric parameter") unless $val =~ /^-?\d+$/;
-        my $hostip = $1;
-        if (defined $hostip) {
-            $Perlbal::ReproxyManager::ReproxyMax{$hostip} = $val+0;
-        } else {
-            $Perlbal::ReproxyManager::ReproxyGlobalMax = $val+0;
-        }
-        return $mc->ok;
-    }
-
     if ($key eq "max_connections") {
         return $mc->err('This command is not available unless BSD::Resource is installed') unless $Perlbal::BSD_RESOURCE_AVAILABLE;
         return $mc->err("Expected numeric parameter") unless $val =~ /^-?\d+$/;
@@ -1020,12 +1008,6 @@ sub MANAGE_dumpconfig {
     }
 
     return $mc->ok
-}
-
-sub MANAGE_reproxy_state {
-    my $mc = shift;
-    Perlbal::ReproxyManager::dump_state($mc->out);
-    return 1;
 }
 
 sub MANAGE_create {
