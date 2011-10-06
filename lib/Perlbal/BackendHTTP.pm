@@ -437,6 +437,8 @@ sub handle_response { # : void
 
     # call service response received function
     return if $self->{reportto}->backend_response_received($self);
+    $hd = $self->{res_headers}; # reset this reference in case a hook changed
+                                # headers
 
     # standard handling
     $self->state("xfer_res");
@@ -478,15 +480,14 @@ sub handle_response { # : void
     }
 
     # regular path:
-    my $res_source = $hd;
-    my $thd = $client->{res_headers} = $res_source->clone;
+    $client->{res_headers} = $hd->clone;
 
     # setup_keepalive will set Connection: and Keep-Alive: headers for us
     # as well as setup our HTTP version appropriately
-    $client->setup_keepalive($thd);
+    $client->setup_keepalive($hd);
 
     print "  writing response headers to client\n" if Perlbal::DEBUG >= 3;
-    $client->write($thd->to_string_ref);
+    $client->write($hd->to_string_ref);
 
     print("  content_length=", (defined $self->{content_length} ? $self->{content_length} : "(undef)"),
           "  remain=",         (defined $self->{content_length_remain} ? $self->{content_length_remain} : "(undef)"), "\n")

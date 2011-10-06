@@ -24,6 +24,8 @@ my $pb_port = new_port();
 my $conf = qq{
 CREATE POOL a
 
+LOAD BackendURLRedirect
+LOAD FileRedirect
 CREATE SERVICE test
 SET test.role = reverse_proxy
 SET test.listen = 127.0.0.1:$pb_port
@@ -31,8 +33,9 @@ SET test.persist_client = 1
 SET test.persist_backend = 1
 SET test.pool = a
 SET test.connect_ahead = 0
-SET test.enable_reproxy = 1
-SET test.reproxy_cache_maxsize = 150
+#SET test.reproxy_cache_maxsize = 150
+SET plugins = FileRedirect,BackendURLRedirect
+
 ENABLE test
 
 CREATE SERVICE ws

@@ -12,7 +12,6 @@ use warnings;
 no  warnings qw(deprecated);
 
 use Perlbal::BackendHTTP;
-use Perlbal::Cache;
 use Perlbal::Util;
 
 use fields (
@@ -22,7 +21,6 @@ use fields (
 
             'pool',            # Perlbal::Pool that we're using to allocate nodes if we're in proxy mode
             'listener',        # Perlbal::TCPListener object, when enabled
-            'reproxy_cache',             # Perlbal::Cache object, when enabled
 
             # end-user tunables
             'listen',             # scalar IP:port of where we're listening for new connections
@@ -45,7 +43,6 @@ use fields (
             'max_backend_uses',  # max requests to send per kept-alive backend (default 0 = unlimited)
             'connect_ahead',           # scalar: number of spare backends to connect to in advance all the time
             'buffer_size', # int: specifies how much data a ClientProxy object should buffer from a backend
-            'buffer_size_reproxy_url', # int: same as above but for backends that are reproxying for us
             'queue_relief_size', # int; number of outstanding standard priority
                                  # connections to activate pressure relief at
             'queue_relief_chance', # int:0-100; % chance to take a standard priority
@@ -100,10 +97,6 @@ use fields (
             'error_retry_schedule',  # string of comma-separated seconds (full or partial) to delay between retries
             'latency',               # int: milliseconds of latency to add to request
             'server_tokens',         # bool: whether to provide a "Server" header
-
-            # stats:
-            '_stat_requests',       # total requests to this service
-            '_stat_cache_hits',     # total requests to this service that were served via the reproxy-url cache
             );
 
 # hash; 'role' => coderef to instantiate a client for this role
@@ -209,13 +202,6 @@ our $tunables = {
     'buffer_size' => {
         des => "How much we'll ahead of a client we'll get while copying from a backend to a client.  If a client gets behind this much, we stop reading from the backend for a bit.",
         default => "256k",
-        check_type => "size",
-        check_role => "reverse_proxy",
-    },
-
-    'buffer_size_reproxy_url' => {
-        des => "How much we'll get ahead of a client we'll get while copying from a reproxied URL to a client.  If a client gets behind this much, we stop reading from the reproxied URL for a bit.  The default is lower than the regular buffer_size (50k instead of 256k) because it's assumed that you're only reproxying to large files on event-based webservers, which are less sensitive to many open connections, whereas the 256k buffer size is good for keeping heavy process-based free of slow clients.",
-        default => "50k",
         check_type => "size",
         check_role => "reverse_proxy",
     },
@@ -1643,23 +1629,6 @@ sub stats_info
         }
     }
     if ($self->{role} eq "reverse_proxy") {
-        if ($self->{reproxy_cache}) {
-            my $hits     = $self->{_stat_cache_hits} || 0;
-            my $hit_rate = sprintf("%0.02f%%", eval { $hits / ($self->{_stat_requests} || 0) * 100 } || 0);
-
-            my $size     = eval { $self->{reproxy_cache}->size };
-            $size = defined($size) ? $size : 'undef';
-
-            my $maxsize  = eval { $self->{reproxy_cache}->maxsize };
-            $maxsize = defined ($maxsize) ? $maxsize : 'undef';
-
-            my $sizepercent = eval { sprintf("%0.02f%%", $size / $maxsize * 100) } || 'undef';
-
-            $out->("    cache size: $size/$maxsize ($sizepercent)");
-            $out->("    cache hits: $hits");
-            $out->("cache hit rate: $hit_rate");
-        }
-
         my $bored_count = scalar @{$self->{bored_backends}};
         $out->(" connect-ahead: $bored_count/$self->{connect_ahead}");
         if ($self->{pool}) {
@@ -1689,43 +1658,6 @@ sub name {
 sub listenaddr {
     my Perlbal::Service $self = $_[0];
     return $self->{listen};
-}
-
-sub reproxy_cache {
-    my Perlbal::Service $self = $_[0];
-    return $self->{reproxy_cache};
-}
-
-sub add_to_reproxy_url_cache {
-    my Perlbal::Service $self;
-    my ($reqhd, $reshd);
-
-    ($self, $reqhd, $reshd) = @_;
-
-    # is caching enabled on this service?
-    my $cache = $self->{reproxy_cache} or
-        return 0;
-
-    # these should always be set anyway, from BackendHTTP:
-    my $reproxy_cache_for = $reshd->header('X-REPROXY-CACHE-FOR') or  return 0;
-    my $urls              = $reshd->header('X-REPROXY-URL')       or  return 0;
-
-    my ($timeout_delta, $cache_headers) = split ';', $reproxy_cache_for, 2;
-    my $timeout = $timeout_delta ? time() + $timeout_delta : undef;
-
-    my $hostname = $reqhd->header("Host") || '';
-    my $requri   = $reqhd->request_uri    || '';
-    my $key = "$hostname|$requri";
-
-    my @headers;
-    foreach my $header (split /\s+/, $cache_headers) {
-        my $value;
-        next unless $header && ($value = $reshd->header($header));
-        $value  = _ref_to($value) if uc($header) eq 'CONTENT-TYPE';
-        push @headers, _ref_to($header), $value;
-    }
-
-    $cache->set($key, [$timeout, \@headers, $urls]);
 }
 
 # given a string, return a shared reference to that string.  to save

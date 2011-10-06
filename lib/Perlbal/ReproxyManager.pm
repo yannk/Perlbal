@@ -9,6 +9,8 @@ use strict;
 use warnings;
 no  warnings qw(deprecated);
 
+use Perlbal::ClientProxyRedirectURL;
+
 # class storage to store 'host:ip' => $service objects, for making
 # reproxies use a service that you can then track
 our $ReproxySelf;
@@ -42,7 +44,7 @@ sub get {
 # request for a reproxy resource
 sub do_reproxy {
     my Perlbal::ReproxyManager $self = Perlbal::ReproxyManager->get; # singleton
-    my Perlbal::ClientProxy $cp = $_[0];
+    my $cp = $_[0];
     return undef unless $self && $cp;
 
     # get data we use
@@ -86,7 +88,7 @@ sub note_bad_backend_connect {
     # at this point, we have no connected backends, and our connecting one failed
     # so we want to tell all of the waiting clients to try their next uri, because
     # this host is down.
-    while (my Perlbal::ClientProxy $cp = shift @{$ReproxyQueues{$be->{ipport}}}) {
+    while (my Perlbal::ClientProxyRedirectURL $cp = shift @{$ReproxyQueues{$be->{ipport}}}) {
         $cp->try_next_uri;
     }
     return 1;
@@ -113,7 +115,7 @@ sub register_boredom {
     }
 
     # find some clients to use
-    while (my Perlbal::ClientProxy $cp = shift @{$ReproxyQueues{$ipport} || []}) {
+    while (my Perlbal::ClientProxyRedirectURL $cp = shift @{$ReproxyQueues{$ipport} || []}) {
         # safety checks
         next if $cp->{closed};
 
@@ -213,7 +215,7 @@ sub spawn_backend {
 sub backend_response_received {
     my Perlbal::ReproxyManager $self = $_[0];
     my Perlbal::BackendHTTP $be = $_[1];
-    my Perlbal::ClientProxy $cp = $be->{client};
+    my Perlbal::ClientProxyRedirectURL $cp = $be->{client};
 
     # if no client, close backend and return 1
     unless ($cp) {
