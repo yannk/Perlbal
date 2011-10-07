@@ -480,14 +480,14 @@ sub handle_response { # : void
     }
 
     # regular path:
-    $client->{res_headers} = $hd->clone;
+    $client->{res_headers} = my $thd = $hd->clone;
 
     # setup_keepalive will set Connection: and Keep-Alive: headers for us
     # as well as setup our HTTP version appropriately
-    $client->setup_keepalive($hd);
+    $client->setup_keepalive($thd);
 
     print "  writing response headers to client\n" if Perlbal::DEBUG >= 3;
-    $client->write($hd->to_string_ref);
+    $client->write($thd->to_string_ref);
 
     print("  content_length=", (defined $self->{content_length} ? $self->{content_length} : "(undef)"),
           "  remain=",         (defined $self->{content_length_remain} ? $self->{content_length_remain} : "(undef)"), "\n")
