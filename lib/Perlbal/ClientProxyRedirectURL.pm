@@ -195,7 +195,9 @@ sub backend_response_received {
 sub http_response_sent {
     my Perlbal::ClientProxyRedirectURL $self = $_[0];
 
-    ## ok, let's downgrade ourselves
+    ## ok, let's downgrade ourselves (similar to return_to_base)
+    ## since persist_client might be on, we want the next proxy client
+    ## class to be the regular one.
     Perlbal::Util::rebless($self, 'Perlbal::ClientProxy');
     $self->http_response_sent;
 }
