@@ -1,0 +1,8 @@
+I'm pushing this to make sure I don't forget, and to not lose it.
+
+This is WIP to remove reproxy_url from Perlbal core and move it into a plugin.
+This would make Perlbal core simpler (It also removes in memory caching).
+
+A second step would be to propose X-REPROXY-* protocol improvement to better
+pass headers in and out. This would require a bit of research to see how
+other HTTP balancers do it (nginx, haproxy, lighttpd).
